@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <title>Emotion Music App (Manual Shot)</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <style>
+    body { font-family: "MS Mincho", serif; background: #EAEAEA; color: #000000; margin: 0; padding: 32px; text-align: center; }
+    h1 { margin: 0 0 16px; font-size: 2rem; }
+    .grid { display: grid; gap: 18px; justify-items: center; grid-template-columns: 1fr; max-width: 900px; margin: 0 auto; }
+    .panel { background: #FFFFFF; border-radius: 16px; padding: 18px; width: 100%; box-shadow: 0 8px 20px rgba(0,0,0,0.1); }
+    video, img, canvas { border-radius: 12px; max-width: 100%; }
+    .controls { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 12px; }
+    button, label.upload {
+      appearance: none; border: 0.25pt solid #000000; cursor: pointer;
+      padding: 10px 16px; border-radius: 12px; font-weight: 600;
+      background: #000000; color: #FFFFFF;font-family: "MS Mincho", serif;
+    }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    label.upload { display: inline-block; }
+    label.upload input { display: none; }
+    .hint { font-size: .9rem; margin-top: 6px; }
+    #status { font-size: .95rem; margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <h1>♪Jouney好きによるJouney好きのためのEmotion Music App♪</h1>
+  <div class="grid">
+    <!-- カメラプレビュー -->
+    <div class="panel">
+      <h3>『カメラ開始』ボタンを押して撮影するか、画像をファイルから選択してください。</h3>
+      <video id="video" autoplay playsinline width="480" height="360" style="background:#000"></video>
+      <div class="controls">
+        <button id="btnStart">カメラ開始</button>
+        <button id="btnShot" disabled>📸 シャッター</button>
+        <button id="btnStop" disabled>⏹ カメラ停止</button> 
+        <label class="upload">
+          画像ファイルを選ぶ
+          <input id="fileInput" type="file" accept="image/*" />
+        </label>
+      </div>
+      <p class="hint">※ 初回はブラウザの「カメラの許可」を押してください ※</p>
+      <p id="status">status: idle</p>
+      <canvas id="canvas" width="480" height="360" style="display:none"></canvas>
+    </div>
+
+    <!-- キャプチャ画像の確認 -->
+    <div class="panel">
+      <h3>撮影orアップした画像</h3>
+      <img id="snapshot" alt="snapshot here" width="480" height="360" />
+    </div>
+
+    <!-- 結果表示 -->
+    <div class="panel">
+      <h3>本日のあなたの気分</h3>
+      <p>Detected Emotion: <span id="emotion">None</span></p>
+      <p style="margin-top:8px">
+        <a id="fallbackLink" href="#" target="_blank" rel="noopener" style="display:inline-block; text-decoration:underline;">
+          📺 YouTubeを開く
+        </a>
+      </p>
+    </div>
+  </div>
+
+  <script>
+    const video = document.getElementById('video');
+    const btnStart = document.getElementById('btnStart');
+    const btnShot  = document.getElementById('btnShot');
+    const btnStop  = document.getElementById('btnStop'); 
+    const fileInput= document.getElementById('fileInput');
+    const canvas   = document.getElementById('canvas');
+    const snapImg  = document.getElementById('snapshot');
+    const statusEl = document.getElementById('status');
+    const emotionEl= document.getElementById('emotion');
+    const fallbackLink = document.getElementById('fallbackLink');
+
+    let stream = null;
+
+    function setStatus(t){ statusEl.textContent = 'status: ' + t; }
+
+    // カメラ開始
+    btnStart.addEventListener('click', async () => {
+      try {
+        setStatus('starting camera...');
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: 480, height: 360, facingMode: 'user' }, audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        setStatus(`camera ready (vw=${video.videoWidth}, vh=${video.videoHeight})`);
+        btnShot.disabled  = false;
+        btnStop.disabled  = false;
+        btnStart.disabled = true;
+      } catch(e) {
+        setStatus('camera error: ' + e.message);
+        alert('カメラが起動できませんでした。');
+      }
+    });
+
+    // カメラ停止
+    btnStop.addEventListener('click', () => {
+      try {
+        if (stream) stream.getTracks().forEach(t => t.stop());
+      } catch(_) {}
+      stream = null;
+      video.srcObject = null;
+      btnShot.disabled  = true;
+      btnStop.disabled  = true;
+      btnStart.disabled = false;
+      setStatus('camera stopped');
+    });
+
+    // シャッター
+    btnShot.addEventListener('click', async () => {
+      if (!video.videoWidth) { setStatus('no video frame yet'); return; }
+
+      canvas.width = video.videoWidth;
+      canvas.height = video.videoHeight;
+      canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+      snapImg.src = canvas.toDataURL('image/jpeg', 0.92);
+
+      setStatus('sending...');
+      canvas.toBlob(async (blob) => {
+        const fd = new FormData();
+        fd.append('image', blob, 'shot.jpg');
+        try {
+          const res = await fetch('/analyze', { method: 'POST', body: fd });
+          const data = await res.json();
+
+          emotionEl.textContent = data.emotion || 'None';
+          if (data.watch_url) {
+            fallbackLink.href = data.watch_url;
+            window.open(data.watch_url, '_blank');
+          }
+          setStatus('done');
+        } catch (e) {
+          setStatus('analyze error: ' + e.message);
+        }
+      }, 'image/jpeg', 0.92);
+    });
+
+    // ファイル選択
+    fileInput.addEventListener('change', async (ev) => {
+      const file = ev.target.files?.[0];
+      if (!file) return;
+      snapImg.src = URL.createObjectURL(file);
+
+      const fd = new FormData();
+      fd.append('image', file);
+      setStatus('sending file...');
+      try {
+        const res = await fetch('/analyze', { method: 'POST', body: fd });
+        const data = await res.json();
+
+        emotionEl.textContent = data.emotion || 'None';
+        if (data.watch_url) {
+          fallbackLink.href = data.watch_url;
+          window.open(data.watch_url, '_blank');
+        }
+        setStatus('done (file)');
+      } catch (e) {
+        setStatus('analyze error: ' + e.message);
+      }
+    });
+
+    // ページ離脱時にカメラ停止
+    window.addEventListener('beforeunload', () => {
+      try { if (stream) stream.getTracks().forEach(t => t.stop()); } catch(_) {}
+    });
+  </script>
+</body>
+</html>
